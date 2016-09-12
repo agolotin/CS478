@@ -1,0 +1,446 @@
+package backpropogation;
+
+import java.util.*;
+
+public class NeuralNet extends SupervisedLearner {
+
+	double learningRate = 0.3;
+	double momentum = 0;
+	final int maxEpochs = 1000;
+	int numHiddenLayers = 1;
+	int[] numHiddenNodes = { 9 };
+	double maxAccuracy = Double.MIN_VALUE;
+	int maxCount = 0;
+	double numOutputs;
+	Random w_rand;
+	
+	ArrayList<InputNode> inputs = new ArrayList<InputNode>();
+	// outer array is layer, inner array is nodes per layer
+	ArrayList< ArrayList<HiddenNode> > hiddenNodes = new ArrayList<ArrayList<HiddenNode>>(numHiddenLayers);
+	ArrayList<OutputNode> outputs = new ArrayList<OutputNode>();
+	
+	public NeuralNet(Random rand) {
+		this.w_rand = rand;
+	}
+	
+	public NeuralNet(Random rand, int numHiddenLayers, String numHiddenNodes, double momentumVal) {
+		this.w_rand = rand;
+		this.numHiddenLayers = numHiddenLayers;
+		
+		String[] tHN = numHiddenNodes.split(",");
+		int[] tempHN = new int[tHN.length];
+		int i = 0;
+		for (String s_tHN : tHN)
+			tempHN[i++] = Integer.valueOf(s_tHN);
+		this.numHiddenNodes = tempHN;
+		this.momentum = momentumVal;
+	}
+	
+	// I really have nowhere else to put these functions
+	private int numLayers() {
+		return 1 + numHiddenLayers + 1;
+	}
+	
+	private boolean hasMomentum() {
+		return this.Momentum;
+	}
+
+	@Override
+	public void predict(double[] features, double[] labels) throws Exception {
+		double[] inputs = Arrays.copyOf(features, features.length+1);
+		inputs[features.length] = 1;
+		this.forward(inputs);
+		
+		double maxPred = Double.MIN_VALUE;
+		int argmax = 0;
+		for (int i = 0; i < this.outputs.size(); i++) {
+			OutputNode output = this.outputs.get(i);
+			if (maxPred < output.getActivationValue()) {
+				maxPred = output.getActivationValue();
+				argmax = i;
+			}
+		}
+		
+		labels[0] = argmax;
+	}
+
+	@Override
+	public void train(Matrix features, Matrix labels) throws Exception {
+		System.out.println("Momentum term is " + (this.hasMomentum() != true ?
+				"not " : "") + "included in training");
+		
+		int numInputs = features.cols();
+		//num of output nodes
+		numOutputs = labels.valueCount(0);
+		this.maxAccuracy = 0;
+		this.maxCount = 0;
+		//===== Quick cleanup and initialization ===== ||
+		this.inputs = new ArrayList<InputNode>();
+		this.hiddenNodes = new ArrayList<ArrayList<HiddenNode>>(numHiddenLayers);
+		this.outputs = new ArrayList<OutputNode>();
+		this.initInputNodes(numInputs+1); /// if numInputs+1 then it's using bias node
+		this.initHiddenLayers(numHiddenLayers, numHiddenNodes);
+		this.setInitialOutputs(numOutputs);
+		this.initWeights(numInputs+1, numOutputs); /// if numInputs+1 then it's using bias node
+		//====== End initializing the neural net ===== ||
+		
+		features.shuffle(w_rand, labels);
+		Matrix validationMatrix = new Matrix();
+		Matrix validationLabels = new Matrix();
+		double splitPercent = 0.75;
+		this.splitValidationSet(features, labels, validationMatrix, validationLabels, splitPercent);
+		
+		ArrayList<ArrayList<ArrayList<Double>>> maxWeights = new ArrayList<ArrayList<ArrayList<Double>>>();
+		int bestEpoch = 1;
+		int epoch = 0;
+		double stopCriteria;
+		int numFeatures = features.rows();
+		boolean stop = false;
+		do {
+			++epoch;
+			features.shuffle(w_rand, labels);
+			
+			for (int featureIndex = 0; featureIndex < numFeatures; featureIndex++) {
+				double[] input = Arrays.copyOf(features.row(featureIndex), features.row(featureIndex).length+1); //bias
+				input[features.row(featureIndex).length] = 1; // bias
+				double target = labels.row(featureIndex)[0];
+				this.forward(input);
+				this.backward(target);
+			}
+			
+			stopCriteria = this.measureAccuracy(validationMatrix, validationLabels, null);
+			double beforeAccuracy = this.maxAccuracy;
+			stop = this.stop(stopCriteria);
+			if (this.maxAccuracy > beforeAccuracy) {
+				maxWeights = retreiveWeights();
+				bestEpoch = epoch;
+			}
+			
+		} while (epoch < this.maxEpochs && !stop);
+		
+		System.out.println();
+		System.out.println("Best epoch: " + bestEpoch + "\nTotal epochs: " + epoch);
+		
+		postmodifyAllWeights(maxWeights);
+	}
+	
+	private boolean stop(double accuracy) {
+		if (accuracy > this.maxAccuracy) {
+			this.maxAccuracy = accuracy;
+			this.maxCount = 0;
+		}
+		else 
+			this.maxCount++;
+		
+		if (this.maxCount > this.maxEpochs / 10) // no update for 100 iterations
+			return true;
+		
+		return false;
+	}
+	
+	//=========================== CHANGE ALL WEIGHTS TO BEST ONES ====================================== ||
+	private void postmodifyAllWeights(ArrayList<ArrayList<ArrayList<Double>>> weights) 
+				throws Exception {
+		Iterator<ArrayList<HiddenNode>> hidden = this.hiddenNodes.iterator();
+		for (int i = 0; i < numLayers() - 1; i++) {
+			
+			if (i == 0) 
+				changeToMaxWeights(this.inputs, weights.get(i));
+			else 
+				changeToMaxWeights(hidden.next(), weights.get(i));
+		}
+	}
+	
+	private <T extends Node> void changeToMaxWeights(ArrayList<T> layer, 
+			ArrayList<ArrayList<Double>> newWeights) throws Exception {
+		for (int i = 0; i < layer.size(); i++) {
+			Node singleNode = (Node) layer.get(i);
+			singleNode.changeAllWeights(newWeights.get(i));
+		}
+	}
+	//=========================== END CHANGE ALL WEIGHTS TO BEST ONES ================================= ||
+
+	//=========================== RETREIVE ALL WEIGHTS TO 3D MATRIX =================================== ||
+	private ArrayList<ArrayList<ArrayList<Double>>> retreiveWeights() {
+		ArrayList<ArrayList<ArrayList<Double>>> weights = new ArrayList<ArrayList<ArrayList<Double>>>();
+		Iterator<ArrayList<HiddenNode>> hidden = this.hiddenNodes.iterator();
+		for (int i = 0; i < numLayers() - 1; i++) {
+			weights.add(new ArrayList<ArrayList<Double>>());
+			
+			if (i == 0) 
+				addWeightsToArray(this.inputs, weights.get(i));
+			else 
+				addWeightsToArray(hidden.next(), weights.get(i));
+		}
+		
+		return weights;
+	}
+	
+	private <T extends Node> void addWeightsToArray(ArrayList<T> layer, ArrayList<ArrayList<Double>> weights) {
+		for (int i = 0; i < layer.size(); i++) {
+			Node singleNode = (Node) layer.get(i);
+			weights.add(singleNode.getWeightsArray());
+		}
+	}
+	//=========================== END RETREIVE ALL WEIGHTS TO 3D MATRIX =============================== ||
+	
+	//==================================== FORWARD ======================================== ||
+	private void forward(double[] input) throws Exception {
+		if (input.length != inputs.size()) 
+			throw new Error("Forward::given input array and predefined neural "
+					+ "net input array are of different sizes");
+		
+		for (int i = 0; i < input.length; i++) {
+			inputs.get(i).setInput(input[i]);
+		}
+		
+		Iterator<ArrayList<HiddenNode>> outerHiddenIter = this.hiddenNodes.iterator();
+		
+		ArrayList<HiddenNode> innerHiddenIter1 = outerHiddenIter.next();
+		ArrayList<HiddenNode> innerHiddenIter2 = iteratorNextNode(outerHiddenIter);
+		
+		//@i is layer index
+		for (int i = 0; i < numLayers() - 1; i++) { // will go till the last hidden layer
+			//input to hidden
+			if (i == 0) {
+				forwardNetPropogation(this.inputs, innerHiddenIter1);
+			}
+			//hidden to output
+			else if (i == numLayers() - 2) {
+				forwardNetPropogation(innerHiddenIter1, this.outputs);
+			}
+			// hidden to hidden 
+			else {
+				forwardNetPropogation(innerHiddenIter1, innerHiddenIter2);
+				
+				innerHiddenIter1 = innerHiddenIter2;
+				innerHiddenIter2 = iteratorNextNode(outerHiddenIter);
+			}
+		}
+	}
+	
+	private <T, K extends Node> void forwardNetPropogation(ArrayList<T> outerArray, ArrayList<K> innerArray) {
+		double[] net = new double[innerArray.size()]; 
+		for (int k = 0; k < outerArray.size(); k++) { 
+			Node singleNode = (Node) outerArray.get(k); 
+			for (int m = 0; m < singleNode.getVectorSizeToNextLayer(); m++) {
+				net[m] += singleNode.getActivationValue() * singleNode.getWeight(m);
+			}
+		}
+		int k = 0;
+		for (Node singleNode : innerArray)
+			singleNode.calculateActivationValue(net[k++]);
+	}
+	
+	//==================================== END FORWARD ==================================== ||
+
+	
+	//==================================== BACKWARDS ====================================== ||
+	private void backward(double target) throws Exception { 
+		int l = 0;
+		ArrayList<ArrayList<Double>> deltaError = new ArrayList<ArrayList<Double>>();
+		deltaError.add(new ArrayList<Double>());
+		
+		int z = 0;
+		for (OutputNode singleNode : this.outputs) {
+			int actualTarget = z++ == target ? 1 : 0;
+			singleNode.setTarget(actualTarget);
+			singleNode.calculateDeltaError();
+			deltaError.get(l).add(singleNode.getOutputError());
+		}
+		
+		int numLayers = this.numLayers();
+		Collections.reverse(this.hiddenNodes);
+		
+		Iterator<ArrayList<HiddenNode>> outerHiddenIter = this.hiddenNodes.iterator();
+		
+		ArrayList<HiddenNode> innerHidden1 = outerHiddenIter.next();
+		ArrayList<HiddenNode> innerHidden2 = iteratorNextNode(outerHiddenIter);
+		
+		for (int i = numLayers - 2; i > 0; i--) { //this is just backpropogation of an error, no need for input nodes
+			//from output layer to the last hidden layer
+			if (i == numLayers - 2) {
+				for (int k = 0; k < innerHidden1.size(); k++) {
+					HiddenNode singleNode = innerHidden1.get(k);
+					singleNode.backpropogateError(deltaError.get(l));
+				}
+				if (innerHidden2 == null)  {
+					deltaError.add(new ArrayList<Double>());
+					l++;
+					for (int k = 0; k < innerHidden1.size(); k++) {
+						deltaError.get(l).add(innerHidden1.get(k).getDeltaError());
+					}
+				}
+			}
+			//from hidden to hidden
+			else {
+				deltaError.add(new ArrayList<Double>());
+				l++;
+				for (int k = 0; k < innerHidden1.size(); k++) {
+					deltaError.get(l).add(innerHidden1.get(k).getDeltaError());
+				}
+				
+				for (int k = 0; k < innerHidden2.size(); k++) {
+					HiddenNode singleNode = innerHidden2.get(k);
+					singleNode.backpropogateError(deltaError.get(l));
+				}
+				
+				innerHidden1 = innerHidden2;
+				innerHidden2 = iteratorNextNode(outerHiddenIter);
+				if (innerHidden2 == null)  {
+					deltaError.add(new ArrayList<Double>());
+					l++;
+					for (int k = 0; k < innerHidden1.size(); k++) {
+						deltaError.get(l).add(innerHidden1.get(k).getDeltaError());
+					}
+				}
+			}
+		}
+		Collections.reverse(this.hiddenNodes);
+		
+		//IMPORTANT!!! CHECK CALCULATIONS AFTER THIS  POINT
+		
+		Collections.reverse(deltaError); 
+		outerHiddenIter = this.hiddenNodes.iterator();
+		innerHidden1 = outerHiddenIter.next();
+		
+		for (int i = 0; i < numLayers - 1; i++) { // nothing to change on the output layer
+			//input layer to hidden layer
+			if (i == 0) {
+				deltaWeightUpdate(this.inputs, deltaError.get(i));
+			}
+			// hidden to hidden
+			else {
+				deltaWeightUpdate(innerHidden1, deltaError.get(i));
+				innerHidden1 = iteratorNextNode(outerHiddenIter);
+			}
+		}
+	}
+	
+	/*
+	 * @param currentLayer is the layer to work with
+	 * @param nextLayerErrors is the pre calculated errors from the next layer
+	 */
+	private <T extends Node> void deltaWeightUpdate(ArrayList<T> currentLayer, ArrayList<Double> nextLayerError) {
+		for (int i = 0; i < currentLayer.size(); i++) {
+			Node singleNode = (Node) currentLayer.get(i);
+			for (int k = 0; k < singleNode.getVectorSizeToNextLayer(); k++) {
+				double deltaChange;
+				deltaChange = momentumDeltaRule(nextLayerError.get(k), 
+							singleNode.getActivationValue(), singleNode.getWeight(k));
+				
+				singleNode.weights.get(k).weight += deltaChange;
+			}
+		}
+	}
+	
+	private double momentumDeltaRule(double error, double output, double prevDelta) {
+		return (this.learningRate * error * output) + (this.momentum * prevDelta);
+	}
+	//==================================== END BACKWARDS ================================== ||
+	
+	//checks to see if the next thing in the iterator will throw an exception
+	private ArrayList<HiddenNode> iteratorNextNode(Iterator<ArrayList<HiddenNode>> nodeIter) {
+		ArrayList<HiddenNode> innerHiddenIter;
+		
+		try {
+			innerHiddenIter = nodeIter.next();
+		}
+		catch (NoSuchElementException e) {
+			innerHiddenIter = null;
+		}
+		
+		return innerHiddenIter;
+	}
+	
+	//==============NEXT TWO FUNCTIONS ARE FOR SPLITTING MATRICIES FOR TRAINING AND VALIDATION======================//
+	private void splitValidationSet(Matrix features, Matrix labels,
+			Matrix validationMatrix, Matrix validationLabels, double splitPercent) {
+		premodifySplittingMatrices(features, labels, validationMatrix, validationLabels);
+		int split = (int) (features.rows() * splitPercent);
+		
+		while (features.rows() != split) {
+			validationMatrix.m_data.add(features.row(split));
+			validationLabels.m_data.add(labels.row(split));
+			
+			features.m_data.remove(split);
+			labels.m_data.remove(split);
+		}
+	}
+	
+	private void premodifySplittingMatrices(Matrix refFeat, Matrix refLbls, Matrix feat, Matrix lbls) {
+		feat.m_attr_name = refFeat.m_attr_name;
+		feat.m_data = new ArrayList<double[]>();
+		feat.m_enum_to_str = refFeat.m_enum_to_str;
+		feat.m_str_to_enum = refFeat.m_str_to_enum;
+		
+		lbls.m_attr_name = refLbls.m_attr_name;
+		lbls.m_data = new ArrayList<double[]>();
+		lbls.m_enum_to_str = refLbls.m_enum_to_str;
+		lbls.m_str_to_enum = refLbls.m_str_to_enum;
+	}
+
+	//=======================PRIVATE INIT METHODS BEYOND THIS POINT===============================//
+	private void initInputNodes(int numInputs) {  
+		/////// modified for bias node
+		/////// assumes numInputs is actualNumInputs+1
+		for (int i = 0; i < numInputs-1; i++) 
+			this.inputs.add(new InputNode("I"+String.valueOf(i+1))); 
+		this.inputs.add(new InputNode("BIAS"));
+	}
+	
+	private void initHiddenLayers(double numHiddenLayers, int[] hiddenNodes) {
+		for (int i = 0; i < numHiddenLayers; i++) {
+			ArrayList<HiddenNode> singleLayer = new ArrayList<HiddenNode>();
+			for (int k = 0; k < hiddenNodes[i]; k++) 
+				singleLayer.add(new HiddenNode("H" + String.valueOf(i+1) + "_" + String.valueOf(k+1)));
+			
+			this.hiddenNodes.add(singleLayer);
+		}
+	}
+	
+	/// called to initialize output Array of OutputNode
+	private void setInitialOutputs(double numOutputs) {
+		for (int i = 0; i < numOutputs; i++) 
+			this.outputs.add(new OutputNode("O"+String.valueOf(i+1)));
+	}
+
+	private void initWeights(double numInputs, double numOutputs) {
+		int numLayers = this.numLayers();
+		
+		Iterator<ArrayList<HiddenNode>> outerHiddenIter = this.hiddenNodes.iterator();
+		
+		ArrayList<HiddenNode> innerHiddenIter1 = outerHiddenIter.next();
+		ArrayList<HiddenNode> innerHiddenIter2 = iteratorNextNode(outerHiddenIter);
+		
+		//@i is layer index
+		for (int i = 0; i < numLayers-1; i++) { /// because no weights on output nodes
+			//from inputIter to first hidden layer
+			if (i == 0) {
+				setWeightsWithinArrays(this.inputs, innerHiddenIter1);
+			}
+			// last hidden layer to output
+			else if (i == numLayers-2) {
+				setWeightsWithinArrays(innerHiddenIter1, this.outputs);
+			}
+			// hidden node to hidden node
+			else {
+				setWeightsWithinArrays(innerHiddenIter1, innerHiddenIter2);
+				
+				innerHiddenIter1 = innerHiddenIter2;
+				innerHiddenIter2 = iteratorNextNode(outerHiddenIter);
+			}
+		}
+	}
+	
+	private <T,K extends Node> void setWeightsWithinArrays(ArrayList<T> outerArray, ArrayList<K> innerArray) {
+		for (int m = 0; m < outerArray.size(); m++) {
+			Node singleNode = (Node) outerArray.get(m);
+			for (int k = 0; k < innerArray.size(); k++) {
+				Node nextNode = (Node) innerArray.get(k);
+				double weight = this.w_rand.nextDouble();
+				singleNode.addNextWeight(nextNode.getLabel(), weight);
+			}
+		}
+	}
+}

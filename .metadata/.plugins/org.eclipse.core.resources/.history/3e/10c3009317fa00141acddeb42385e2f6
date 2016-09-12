@@ -1,0 +1,173 @@
+package decision_tree_learning;
+
+import java.io.*;
+import java.util.*;
+import java.util.Map.Entry;
+
+import org.apache.commons.lang.ArrayUtils;
+
+public class DecisionTree extends SupervisedLearner {
+	public DecisionTree() {}
+	public DecisionTree(boolean accuracy) {
+		infoGain = accuracy;
+	}
+	
+	public boolean infoGain = true;
+	public TreeNode root;
+	
+	@Override
+	public void train(Matrix features, Matrix labels) throws Exception {
+		root = new TreeNode();
+		root.setValue(0, "root");
+		
+		partition(root.add(), features, labels);
+		root.printTree(root.children.get(0));
+	}
+	
+	@Override
+	public void predict(double[] features, double[] labels) throws Exception {
+		this.predict(root.children.get(0), features, labels);
+	}
+	
+	public void predict(TreeNode node, double[] features, double[] labels) throws Exception {
+		if (node.isLeaf()) {
+			labels[0] = node.getLabel();
+			return;
+		}
+		
+		double attr = node.getAttr();
+		double[] featureCopy = Arrays.copyOf(features, features.length);
+		featureCopy = ArrayUtils.remove(featureCopy, (int)attr);
+		
+		for (TreeNode s_node : node.children) {
+			double compare = node.getValue();
+			if (s_node.getValue() != features[(int)attr] && s_node.getValueName() == "?")
+				compare = UNKNOWN_VALUE;
+			
+			if (compare == features[(int)attr]){
+				this.predict(s_node, featureCopy, labels);
+				return;
+			}
+		}
+		
+		System.out.println("Error: Attribute " + node.getAttr() + " - " + node.getAttrName() + " value: " + features[(int)attr]);
+		throw new Exception("No matching attribute-value pair for input feature");
+	}
+	
+	public boolean partition(TreeNode node, Matrix features, Matrix labels) throws Exception {
+		if (features.rows() != labels.rows())
+			throw new Exception("Partition::Feature and label matrix have to be of the same size.");
+		
+		double f_rows = ((double)features.rows());
+		Map<Double, Double> classes = labels.getValueCounts(0);    
+		
+		double numClasses = classes.size();
+		if (numClasses == 1) 
+		{
+			//label node with class
+			double c = classes.keySet().iterator().next().doubleValue();
+			node.setLabel(c, labels.attrValue(0, (int)c));
+			return true;
+		}
+		else if (numClasses < 1 || f_rows < 1 || features.cols() < 1)
+			//something's not right...
+			return false;
+		
+		double _entropy = this.calculateEntropy(features, labels);
+		double maxGain = 0.0;
+		double maxAttr = 0.0;
+		
+		
+		for (int attr = 0; attr < features.cols(); attr++)
+		{
+			Map<Double, Double> counts = features.getValueCounts(attr);
+			
+			//Skip it if attribute has only one value
+			if (counts.size() == 1)
+				continue;
+			double info = 0.0;
+			double gainRatio = 0.0;
+			
+			for (Entry<Double, Double> single_feature : counts.entrySet()) 
+			{
+				//set value to invalid unless it's valid
+				double value = -1;
+				if (single_feature.getKey() != Matrix.MISSING)
+					value = single_feature.getKey();
+				
+				Matrix reducedFeatures = new Matrix();
+				Matrix reducedLabels = new Matrix();
+				ArrayList<Integer> rowIndicies = features.reduce(reducedFeatures, attr, value);
+				labels.reduce(reducedLabels, rowIndicies);
+				
+				//if (infoGain) {
+				//	calculateInfoGain(reducedFeatures, f_rows, info, gainRatio);
+				//}
+				//else {
+				//	calculateAccuracy(reducedFeatures, f_rows, info, gainRatio);
+				//}
+				// Right now only uses entropy to measure gain
+				double redRows = reducedFeatures.rows();
+				double rowRatio = redRows / f_rows;
+				
+				double attrEntropy = this.calculateEntropy(reducedFeatures, reducedLabels);
+				
+				info += rowRatio * attrEntropy;
+				
+				gainRatio -= rowRatio * (Math.log(rowRatio)/Math.log(2));
+			}
+			
+			//establishNextAttribute(_entropy, info, attr, maxGain, maxAttr, infoGain);
+			// next several lines will be moved to the function above
+			double gain = _entropy - info;
+			
+			if (gain > maxGain)
+			{
+				maxGain = gain;
+				maxAttr = attr;
+			}
+		}
+		
+		//label node with best attribute
+		node.setAttr(maxAttr, features.attrName((int)maxAttr));
+		ArrayList<Integer> values = features.allAttrValues(maxAttr);
+		for (Integer value : values)
+		{
+			TreeNode newNode = node.add();
+			newNode.setValue(value, features.attrValue((int)maxAttr, value));
+			
+			//reduce matrices for further recursive use
+			Matrix reducedFeatures = new Matrix();
+			Matrix reducedLabels = new Matrix();
+			ArrayList<Integer> rowIndicies = features.reduce(reducedFeatures, maxAttr, value);
+			labels.reduce(reducedLabels, rowIndicies);
+			//reducedLabels.setAttrName(0, node.getAttrName());
+			
+			//call partition on the node and reduced matrices
+			boolean labeled = this.partition(newNode, reducedFeatures, reducedLabels);
+			if (!labeled) {
+				double mcl = labels.mostCommonValue(0);
+				newNode.setLabel(mcl, labels.attrValue(0, (int)mcl));
+			}
+		}
+		
+		return true;
+	}
+	
+	private double calculateEntropy(Matrix features, Matrix labels) {
+		Map<Double, Double> counts = labels.getValueCounts(0);
+		
+		double numRows = labels.rows();
+		
+		double entropy = 0.0;
+		for (Entry<Double, Double> s_counts : counts.entrySet()) {
+			double p = s_counts.getValue() / numRows;
+			if (p != 0.0)
+				entropy += p * (Math.log(p) / Math.log(2));
+		}
+		entropy *= -1;
+		
+		return entropy;
+	}
+	
+}
